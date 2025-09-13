@@ -74,6 +74,7 @@ func main() {
 	tenderIQGroup := e.Group("/api/tenderiq")
 	tenderIQGroup.POST("/upload", tenderIQHandler.UploadDocument)
 	tenderIQGroup.POST("/analyze", tenderIQHandler.AnalyzeDocument)
+	tenderIQGroup.POST("/sections", tenderIQHandler.AnalyzeSections)
 	tenderIQGroup.GET("/documents", tenderIQHandler.ListDocuments)
 	tenderIQGroup.GET("/documents/:id", tenderIQHandler.GetDocument)
 	tenderIQGroup.DELETE("/documents/:id", tenderIQHandler.DeleteDocument)

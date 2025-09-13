@@ -355,8 +355,46 @@ func (h *TenderIQHandler) SearchDocuments(c echo.Context) error {
 	})
 }
 
+// AnalyzeSections performs section-wise analysis of a document
+func (h *TenderIQHandler) AnalyzeSections(c echo.Context) error {
+	var request struct {
+		DocumentID string `json:"document_id"`
+	}
+
+	if err := c.Bind(&request); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Invalid request format",
+		})
+	}
+
+	if request.DocumentID == "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{
+			"error": "Document ID is required",
+		})
+	}
+
+	// Get document from vector store
+	doc, exists := h.vectorStore.GetDocument(request.DocumentID)
+	if !exists {
+		return c.JSON(http.StatusNotFound, map[string]string{
+			"error": "Document not found",
+		})
+	}
+
+	// Perform section-wise analysis using Gemini
+	result, err := h.geminiService.ExtractSectionwiseAnalysis(doc.Content)
+	if err != nil {
+		log.Printf("Section-wise analysis error: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{
+			"error": "Failed to analyze document sections",
+		})
+	}
+
+	return c.JSON(http.StatusOK, result)
+}
+
 // Helper function for min
-func min(a, b int) int {
+func minValue(a, b int) int {
 	if a < b {
 		return a
 	}
