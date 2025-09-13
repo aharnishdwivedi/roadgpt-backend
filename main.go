@@ -55,6 +55,12 @@ func main() {
 	// Initialize services
 	openAIService := NewOpenAIService(os.Getenv("OPENAI_API_KEY"))
 	wsHandler := NewWebSocketHandler(openAIService)
+	
+	// Initialize TenderIQ services
+	geminiService := NewGeminiService(os.Getenv("GEMINI_API_KEY"))
+	vectorStore := NewVectorStore()
+	pdfParser := NewPDFParser()
+	tenderIQHandler := NewTenderIQHandler(geminiService, vectorStore, pdfParser)
 
 	// Routes
 	e.GET("/", func(c echo.Context) error {
@@ -63,6 +69,15 @@ func main() {
 
 	// WebSocket endpoint for roadgpt
 	e.GET("/roadgpt", wsHandler.HandleWebSocket)
+
+	// TenderIQ API endpoints
+	tenderIQGroup := e.Group("/api/tenderiq")
+	tenderIQGroup.POST("/upload", tenderIQHandler.UploadDocument)
+	tenderIQGroup.POST("/analyze", tenderIQHandler.AnalyzeDocument)
+	tenderIQGroup.GET("/documents", tenderIQHandler.ListDocuments)
+	tenderIQGroup.GET("/documents/:id", tenderIQHandler.GetDocument)
+	tenderIQGroup.DELETE("/documents/:id", tenderIQHandler.DeleteDocument)
+	tenderIQGroup.GET("/search", tenderIQHandler.SearchDocuments)
 
 	// Health check endpoint
 	e.GET("/health", func(c echo.Context) error {
