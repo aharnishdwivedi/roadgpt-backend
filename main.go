@@ -1,15 +1,49 @@
 package main
 
 import (
+	"bufio"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 )
 
+// loadEnvFile loads environment variables from a file
+func loadEnvFile(filename string) {
+	file, err := os.Open(filename)
+	if err != nil {
+		return // File doesn't exist, skip
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue // Skip empty lines and comments
+		}
+		
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			
+			// Only set if not already set in environment
+			if os.Getenv(key) == "" {
+				os.Setenv(key, value)
+			}
+		}
+	}
+}
+
 func main() {
+	// Load environment variables from .env file first, then .env.example as fallback
+	loadEnvFile(".env")
+	loadEnvFile(".env.example")
+
 	// Create Echo instance
 	e := echo.New()
 

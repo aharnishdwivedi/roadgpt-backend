@@ -25,7 +25,7 @@ func NewOpenAIService(apiKey string) *OpenAIService {
 
 func (s *OpenAIService) GetChatResponse(userMessage string) (string, error) {
 	if s.client == nil {
-		return "", fmt.Errorf("OpenAI client not initialized")
+		return "Sorry, I'm not properly configured. Please check the server setup.", fmt.Errorf("OpenAI client not initialized")
 	}
 
 	// Create a system prompt focused on road safety and driving
@@ -65,11 +65,12 @@ Always provide helpful, accurate, and safety-focused responses. If asked about t
 
 	if err != nil {
 		log.Printf("OpenAI API error: %v", err)
-		return "", fmt.Errorf("failed to get response from OpenAI: %w", err)
+		// Return a helpful fallback message instead of exposing the error
+		return "I'm having trouble connecting to my AI service right now. This could be due to an API key issue or temporary service unavailability. Please check the server configuration and try again.", fmt.Errorf("failed to get response from OpenAI: %w", err)
 	}
 
 	if len(resp.Choices) == 0 {
-		return "", fmt.Errorf("no response choices returned from OpenAI")
+		return "I received an empty response from the AI service. Please try asking your question again.", fmt.Errorf("no response choices returned from OpenAI")
 	}
 
 	return resp.Choices[0].Message.Content, nil
