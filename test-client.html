@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>RoadGPT Test Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .chat-container {
+            height: 400px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            padding: 10px;
+            overflow-y: auto;
+            background-color: #fafafa;
+            margin-bottom: 20px;
+        }
+        .message {
+            margin: 10px 0;
+            padding: 8px 12px;
+            border-radius: 8px;
+            max-width: 80%;
+        }
+        .user-message {
+            background-color: #007bff;
+            color: white;
+            margin-left: auto;
+            text-align: right;
+        }
+        .ai-message {
+            background-color: #e9ecef;
+            color: #333;
+        }
+        .system-message {
+            background-color: #28a745;
+            color: white;
+            text-align: center;
+            font-style: italic;
+        }
+        .typing-message {
+            background-color: #ffc107;
+            color: #333;
+            font-style: italic;
+        }
+        .error-message {
+            background-color: #dc3545;
+            color: white;
+        }
+        .input-container {
+            display: flex;
+            gap: 10px;
+        }
+        #messageInput {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            font-size: 16px;
+        }
+        #sendButton {
+            padding: 10px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        #sendButton:hover {
+            background-color: #0056b3;
+        }
+        #sendButton:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-bottom: 10px;
+            padding: 10px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        .connected {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🛣️ RoadGPT Test Client</h1>
+        <div id="status" class="status disconnected">Disconnected</div>
+        
+        <div id="chatContainer" class="chat-container"></div>
+        
+        <div class="input-container">
+            <input type="text" id="messageInput" placeholder="Ask me about road safety, traffic rules, or driving tips..." disabled>
+            <button id="sendButton" disabled>Send</button>
+        </div>
+        
+        <div style="margin-top: 20px;">
+            <h3>Sample Questions:</h3>
+            <ul>
+                <li>What are the best practices for driving in rain?</li>
+                <li>How should I maintain a safe following distance?</li>
+                <li>What should I do if my car breaks down on the highway?</li>
+                <li>How can I improve my defensive driving skills?</li>
+            </ul>
+        </div>
+    </div>
+
+    <script>
+        let ws;
+        const chatContainer = document.getElementById('chatContainer');
+        const messageInput = document.getElementById('messageInput');
+        const sendButton = document.getElementById('sendButton');
+        const status = document.getElementById('status');
+
+        function connect() {
+            ws = new WebSocket('ws://localhost:8082/roadgpt');
+            
+            ws.onopen = function() {
+                status.textContent = 'Connected to RoadGPT';
+                status.className = 'status connected';
+                messageInput.disabled = false;
+                sendButton.disabled = false;
+                messageInput.focus();
+            };
+            
+            ws.onmessage = function(event) {
+                const message = JSON.parse(event.data);
+                displayMessage(message);
+            };
+            
+            ws.onclose = function() {
+                status.textContent = 'Disconnected from RoadGPT';
+                status.className = 'status disconnected';
+                messageInput.disabled = true;
+                sendButton.disabled = true;
+            };
+            
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                displayMessage({
+                    type: 'error',
+                    error: 'Connection error occurred'
+                });
+            };
+        }
+
+        function displayMessage(message) {
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+            
+            switch(message.type) {
+                case 'system':
+                    messageDiv.className += ' system-message';
+                    messageDiv.textContent = message.content;
+                    break;
+                case 'ai_response':
+                    messageDiv.className += ' ai-message';
+                    messageDiv.textContent = message.content;
+                    break;
+                case 'typing':
+                    messageDiv.className += ' typing-message';
+                    messageDiv.textContent = message.content;
+                    messageDiv.id = 'typing-indicator';
+                    break;
+                case 'error':
+                    messageDiv.className += ' error-message';
+                    messageDiv.textContent = message.error;
+                    break;
+            }
+            
+            // Remove existing typing indicator if new message arrives
+            if (message.type !== 'typing') {
+                const existingTyping = document.getElementById('typing-indicator');
+                if (existingTyping) {
+                    existingTyping.remove();
+                }
+            }
+            
+            chatContainer.appendChild(messageDiv);
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        function sendMessage() {
+            const content = messageInput.value.trim();
+            if (content && ws && ws.readyState === WebSocket.OPEN) {
+                // Display user message
+                const userMessageDiv = document.createElement('div');
+                userMessageDiv.className = 'message user-message';
+                userMessageDiv.textContent = content;
+                chatContainer.appendChild(userMessageDiv);
+                
+                // Send to server
+                ws.send(JSON.stringify({
+                    type: 'user_message',
+                    content: content
+                }));
+                
+                messageInput.value = '';
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+            }
+        }
+
+        // Event listeners
+        sendButton.addEventListener('click', sendMessage);
+        messageInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // Connect on page load
+        connect();
+    </script>
+</body>
+</html>
