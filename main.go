@@ -25,12 +25,12 @@ func loadEnvFile(filename string) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue // Skip empty lines and comments
 		}
-		
+
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) == 2 {
 			key := strings.TrimSpace(parts[0])
 			value := strings.TrimSpace(parts[1])
-			
+
 			// Only set if not already set in environment
 			if os.Getenv(key) == "" {
 				os.Setenv(key, value)
@@ -55,7 +55,7 @@ func main() {
 	// Initialize services
 	openAIService := NewOpenAIService(os.Getenv("OPENAI_API_KEY"))
 	wsHandler := NewWebSocketHandler(openAIService)
-	
+
 	// Initialize TenderIQ services
 	geminiService := NewGeminiService(os.Getenv("GEMINI_API_KEY"))
 	vectorStore := NewVectorStore()
@@ -89,7 +89,7 @@ func main() {
 	// Health check endpoint
 	e.GET("/health", func(c echo.Context) error {
 		return c.JSON(http.StatusOK, map[string]string{
-			"status": "healthy",
+			"status":  "healthy",
 			"service": "roadgpt-backend",
 		})
 	})

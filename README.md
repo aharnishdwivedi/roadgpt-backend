@@ -61,7 +61,7 @@ go build -o roadgpt-backend
 ## API Endpoints
 
 ### WebSocket Endpoint
-- **URL**: `ws://localhost:8080/roadgpt`
+- **URL**: `ws://backend.roadvision.ai:8082/roadgpt`
 - **Protocol**: WebSocket
 - **Purpose**: Real-time chat with RoadGPT AI
 
@@ -117,7 +117,7 @@ go build -o roadgpt-backend
 To connect from your frontend (e.g., React, Vue, vanilla JS):
 
 ```javascript
-const ws = new WebSocket('ws://localhost:8080/roadgpt');
+const ws = new WebSocket('ws://backend.roadvision.ai:8082/roadgpt');
 
 ws.onopen = function() {
     console.log('Connected to RoadGPT');

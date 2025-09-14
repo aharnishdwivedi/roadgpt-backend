@@ -132,7 +132,7 @@
         const status = document.getElementById('status');
 
         function connect() {
-            ws = new WebSocket('ws://localhost:8082/roadgpt');
+            ws = new WebSocket('ws://backend.roadvision.ai:8082/roadgpt');
             
             ws.onopen = function() {
                 status.textContent = 'Connected to RoadGPT';
