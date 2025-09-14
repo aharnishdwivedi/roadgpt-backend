@@ -19,9 +19,9 @@ type SectionAnalysis struct {
 }
 
 type KeyConsideration struct {
-	Consideration string  `json:"consideration"`
-	IsCritical    bool    `json:"is_critical"`
-	PageNumbers   []int   `json:"page_numbers,omitempty"`
+	Consideration string `json:"consideration"`
+	IsCritical    bool   `json:"is_critical"`
+	PageNumbers   []int  `json:"page_numbers,omitempty"`
 }
 
 type SectionwiseResult struct {
@@ -85,14 +85,20 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 		return nil, fmt.Errorf("gemini client not initialized")
 	}
 
-	ctx := context.Background()
+	// Create context with overall timeout for the entire operation
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
 
 	// 1. Attempt full-document single-call with Gemini 2.5 Pro
 	log.Printf("=== Attempting single-call full-document with Gemini 2.5 Pro ===")
 	log.Printf("(If this fails or returns unparsable JSON, we'll try fallback single-call then chunked extraction.)")
 
 	prompt := fmt.Sprintf(SINGLE_DOC_PROMPT, documentText)
-	resp, err := g.proModel.GenerateContent(ctx, genai.Text(prompt))
+
+	// Create timeout context for primary call
+	primaryCtx, primaryCancel := context.WithTimeout(ctx, 30*time.Second)
+	resp, err := g.proModel.GenerateContent(primaryCtx, genai.Text(prompt))
+	primaryCancel()
 
 	if err == nil && len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
 		var result string
@@ -120,7 +126,11 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 
 	// 2. Try single-call with Gemini 2.5 Flash fallback
 	log.Printf("=== Attempting single-call full-document with fallback model Gemini 2.5 Flash ===")
-	resp, err = g.flashModel.GenerateContent(ctx, genai.Text(prompt))
+
+	// Create timeout context for secondary call
+	secondaryCtx, secondaryCancel := context.WithTimeout(ctx, 20*time.Second)
+	resp, err = g.flashModel.GenerateContent(secondaryCtx, genai.Text(prompt))
+	secondaryCancel()
 
 	if err == nil && len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
 		var result string
@@ -153,8 +163,8 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 	pages := g.extractTextByPage(documentText)
 	log.Printf("PDF pages: %d", len(pages))
 
-	chunks := g.makeChunksFromPages(pages, 6, 1) // 6 pages per chunk, 1 page overlap
-	log.Printf("Built %d chunk(s) (pages_per_chunk=6, overlap=1)", len(chunks))
+	chunks := g.makeChunksFromPages(pages, 4, 1) // 4 pages per chunk, 1 page overlap (smaller for faster processing)
+	log.Printf("Built %d chunk(s) (pages_per_chunk=4, overlap=1)", len(chunks))
 
 	// Prefilter chunks to only those likely containing sections
 	candidateChunks := g.filterCandidateChunks(chunks)
@@ -164,7 +174,7 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 	processedCount := 0
 	consecutiveNoNew := 0
 	maxConsecutiveNoNew := 6
-	maxRetries := 2
+	maxRetries := 1                          // Reduce retries for faster processing
 	processedChunks := make(map[string]bool) // Track processed chunks to avoid duplicates
 
 	for i, chunk := range candidateChunks {
@@ -186,15 +196,15 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 		success := false
 		for retry := 0; retry <= maxRetries; retry++ {
 			if retry > 0 {
-				backoffTime := time.Duration(retry*retry) * 500 * time.Millisecond
+				backoffTime := 1 * time.Second // Fixed 1s backoff for speed
 				log.Printf("Retrying chunk %s (attempt %d/%d) after %v", chunk.PageRange, retry+1, maxRetries+1, backoffTime)
 				time.Sleep(backoffTime)
 			}
 
 			chunkPrompt := fmt.Sprintf(CHUNK_PROMPT, chunk.Text)
-			
-			// Create context with timeout for this specific call
-			chunkCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+
+			// Create context with shorter timeout for faster failure detection
+			chunkCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
 			chunkResp, err := g.flashModel.GenerateContent(chunkCtx, genai.Text(chunkPrompt))
 			cancel()
 
@@ -250,9 +260,9 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 			break
 		}
 
-		// Throttle to avoid rate limiting
+		// Minimal throttle for speed
 		if i < len(candidateChunks)-1 {
-			time.Sleep(200 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
 
