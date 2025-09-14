@@ -164,21 +164,58 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 	processedCount := 0
 	consecutiveNoNew := 0
 	maxConsecutiveNoNew := 6
+	maxRetries := 2
+	processedChunks := make(map[string]bool) // Track processed chunks to avoid duplicates
 
 	for i, chunk := range candidateChunks {
+		// Skip if already processed
+		chunkKey := fmt.Sprintf("%s", chunk.PageRange)
+		if processedChunks[chunkKey] {
+			log.Printf("Skipping already processed chunk %s", chunk.PageRange)
+			continue
+		}
+
 		processedCount++
 		log.Printf("--- chunk %d/%d pages %s ---", processedCount, len(candidateChunks), chunk.PageRange)
 
-		chunkPrompt := fmt.Sprintf(CHUNK_PROMPT, chunk.Text)
-		chunkResp, err := g.flashModel.GenerateContent(ctx, genai.Text(chunkPrompt))
+		// Mark as processed immediately to prevent retries
+		processedChunks[chunkKey] = true
 
-		if err != nil {
-			log.Printf("Chunk %d failed: %v", processedCount, err)
-			consecutiveNoNew++
-		} else if len(chunkResp.Candidates) == 0 || len(chunkResp.Candidates[0].Content.Parts) == 0 {
-			log.Printf("Chunk %d returned empty response", processedCount)
-			consecutiveNoNew++
-		} else {
+		// Retry logic with exponential backoff
+		var chunkSections []SectionAnalysis
+		success := false
+		for retry := 0; retry <= maxRetries; retry++ {
+			if retry > 0 {
+				backoffTime := time.Duration(retry*retry) * 500 * time.Millisecond
+				log.Printf("Retrying chunk %s (attempt %d/%d) after %v", chunk.PageRange, retry+1, maxRetries+1, backoffTime)
+				time.Sleep(backoffTime)
+			}
+
+			chunkPrompt := fmt.Sprintf(CHUNK_PROMPT, chunk.Text)
+			
+			// Create context with timeout for this specific call
+			chunkCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+			chunkResp, err := g.flashModel.GenerateContent(chunkCtx, genai.Text(chunkPrompt))
+			cancel()
+
+			if err != nil {
+				log.Printf("Chunk %s attempt %d failed: %v", chunk.PageRange, retry+1, err)
+				if retry == maxRetries {
+					consecutiveNoNew++
+					break
+				}
+				continue
+			}
+
+			if len(chunkResp.Candidates) == 0 || len(chunkResp.Candidates[0].Content.Parts) == 0 {
+				log.Printf("Chunk %s attempt %d returned empty response", chunk.PageRange, retry+1)
+				if retry == maxRetries {
+					consecutiveNoNew++
+					break
+				}
+				continue
+			}
+
 			var chunkResult string
 			for _, part := range chunkResp.Candidates[0].Content.Parts {
 				if textPart, ok := part.(genai.Text); ok {
@@ -189,13 +226,22 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 			log.Printf("RAW preview: %s", truncateStringForSections(strings.ReplaceAll(chunkResult, "\n", " "), 800))
 			chunkResult = cleanJSONResponse(chunkResult)
 
-			var chunkSections []SectionAnalysis
 			if json.Unmarshal([]byte(chunkResult), &chunkSections) == nil && len(chunkSections) > 0 {
 				chunkResults = append(chunkResults, chunkSections)
 				consecutiveNoNew = 0
+				success = true
+				log.Printf("Chunk %s processed successfully with %d sections", chunk.PageRange, len(chunkSections))
+				break
 			} else {
-				consecutiveNoNew++
+				log.Printf("Chunk %s attempt %d failed to parse JSON", chunk.PageRange, retry+1)
+				if retry == maxRetries {
+					consecutiveNoNew++
+				}
 			}
+		}
+
+		if !success {
+			log.Printf("Chunk %s failed after all retry attempts", chunk.PageRange)
 		}
 
 		// Early stopping condition
@@ -211,10 +257,12 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 	}
 
 	// Aggregate chunk results
+	log.Printf("Processed %d chunks successfully, got %d chunk results", processedCount, len(chunkResults))
 	if len(chunkResults) == 0 {
 		return &SectionwiseResult{
-			Mode:  "chunk_failed",
-			Final: []SectionAnalysis{},
+			Mode:            "chunk_failed",
+			Final:           []SectionAnalysis{},
+			ProcessedChunks: processedCount,
 		}, nil
 	}
 
