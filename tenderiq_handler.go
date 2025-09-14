@@ -381,16 +381,14 @@ func (h *TenderIQHandler) AnalyzeSections(c echo.Context) error {
 		})
 	}
 
-	// Perform section-wise analysis using Gemini
-	result, err := h.geminiService.ExtractSectionwiseAnalysis(doc.Content)
+	// Perform section-wise analysis with optimized fallback strategy
+	sectionsResult, err := h.geminiService.ExtractSectionwiseAnalysis(doc.Content)
 	if err != nil {
-		log.Printf("Section-wise analysis error: %v", err)
-		return c.JSON(http.StatusInternalServerError, map[string]string{
-			"error": "Failed to analyze document sections",
-		})
+		log.Printf("Section-wise analysis failed: %v", err)
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Section-wise analysis failed"})
 	}
 
-	return c.JSON(http.StatusOK, result)
+	return c.JSON(http.StatusOK, sectionsResult)
 }
 
 // Helper function for min

@@ -25,9 +25,19 @@ type KeyConsideration struct {
 }
 
 type SectionwiseResult struct {
-	Mode      string            `json:"mode"`
-	Final     []SectionAnalysis `json:"final"`
-	RawSingle string            `json:"raw_single,omitempty"`
+	Mode                  string            `json:"mode"`
+	Final                 []SectionAnalysis `json:"final"`
+	RawSingle             string            `json:"raw_single,omitempty"`
+	ProcessedChunks       int               `json:"processed_chunks,omitempty"`
+	SectionsCount         int               `json:"sections_count,omitempty"`
+	CompletedSectionCount int               `json:"completed_section_count,omitempty"`
+}
+
+type OptimizedChunk struct {
+	StartPage int
+	EndPage   int
+	Text      string
+	PageRange string
 }
 
 const SINGLE_DOC_PROMPT = `You are an expert document parser. From the DOCUMENT extract every logical section and return a JSON array of section objects.
@@ -77,19 +87,12 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 
 	ctx := context.Background()
 
-	// 1. Try single-call extraction with Pro first, fallback to Flash
-	log.Printf("Attempting single-call section-wise extraction with Gemini 2.5 Pro...")
+	// 1. Attempt full-document single-call with Gemini 2.5 Pro
+	log.Printf("=== Attempting single-call full-document with Gemini 2.5 Pro ===")
+	log.Printf("(If this fails or returns unparsable JSON, we'll try fallback single-call then chunked extraction.)")
 
 	prompt := fmt.Sprintf(SINGLE_DOC_PROMPT, documentText)
 	resp, err := g.proModel.GenerateContent(ctx, genai.Text(prompt))
-
-	if err != nil {
-		log.Printf("Gemini 2.5 Pro failed for sections: %v, falling back to Flash", err)
-		resp, err = g.flashModel.GenerateContent(ctx, genai.Text(prompt))
-		if err != nil {
-			log.Printf("Both models failed for sections: %v", err)
-		}
-	}
 
 	if err == nil && len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
 		var result string
@@ -103,60 +106,111 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 
 		var sections []SectionAnalysis
 		if json.Unmarshal([]byte(result), &sections) == nil && len(sections) > 0 {
-			log.Printf("Single-call extraction successful, found %d sections", len(sections))
+			log.Printf("Primary single-call parsed as list. Returning result.")
 			return &SectionwiseResult{
-				Mode:      "single_call",
+				Mode:      "single_primary",
 				Final:     sections,
 				RawSingle: result,
 			}, nil
 		}
-
-		log.Printf("Single-call returned invalid JSON, falling back to chunked approach")
+		log.Printf("Primary single-call failed or returned unparsable output. Preview (truncated): %s", truncateStringForSections(result, 2000))
 	} else {
-		log.Printf("Single-call failed: %v", err)
+		log.Printf("Primary single-call failed: %v", err)
 	}
 
-	// 2. Fallback to chunked extraction
-	log.Printf("Starting chunked section-wise extraction...")
+	// 2. Try single-call with Gemini 2.5 Flash fallback
+	log.Printf("=== Attempting single-call full-document with fallback model Gemini 2.5 Flash ===")
+	resp, err = g.flashModel.GenerateContent(ctx, genai.Text(prompt))
 
-	chunks := g.createDocumentChunks(documentText, 3000) // ~3000 chars per chunk
-	chunkResults := [][]SectionAnalysis{}
-
-	for i, chunk := range chunks {
-		log.Printf("Processing chunk %d/%d", i+1, len(chunks))
-
-		chunkPrompt := fmt.Sprintf(CHUNK_PROMPT, chunk)
-		chunkResp, err := g.flashModel.GenerateContent(ctx, genai.Text(chunkPrompt))
-
-		if err != nil {
-			log.Printf("Chunk %d failed: %v", i+1, err)
-			continue
-		}
-
-		if len(chunkResp.Candidates) == 0 || len(chunkResp.Candidates[0].Content.Parts) == 0 {
-			log.Printf("Chunk %d returned empty response", i+1)
-			continue
-		}
-
-		var chunkResult string
-		for _, part := range chunkResp.Candidates[0].Content.Parts {
+	if err == nil && len(resp.Candidates) > 0 && len(resp.Candidates[0].Content.Parts) > 0 {
+		var result string
+		for _, part := range resp.Candidates[0].Content.Parts {
 			if textPart, ok := part.(genai.Text); ok {
-				chunkResult += string(textPart)
+				result += string(textPart)
 			}
 		}
 
-		chunkResult = cleanJSONResponse(chunkResult)
+		result = cleanJSONResponse(result)
 
-		var chunkSections []SectionAnalysis
-		if json.Unmarshal([]byte(chunkResult), &chunkSections) == nil {
-			chunkResults = append(chunkResults, chunkSections)
+		var sections []SectionAnalysis
+		if json.Unmarshal([]byte(result), &sections) == nil && len(sections) > 0 {
+			log.Printf("Secondary single-call parsed as list. Returning result.")
+			return &SectionwiseResult{
+				Mode:      "single_secondary",
+				Final:     sections,
+				RawSingle: result,
+			}, nil
 		}
-
-		// Small delay to avoid rate limiting
-		time.Sleep(500 * time.Millisecond)
+		log.Printf("Secondary single-call failed or returned unparsable output. Preview (truncated): %s", truncateStringForSections(result, 2000))
+	} else {
+		log.Printf("Secondary single-call failed: %v", err)
 	}
 
-	// 3. Aggregate chunk results
+	// 3. Fallback: optimized chunked extraction using Gemini 2.5 Flash
+	log.Printf("=== Falling back to optimized chunked extraction using Gemini 2.5 Flash ===")
+
+	// Extract text by pages and create optimized chunks
+	pages := g.extractTextByPage(documentText)
+	log.Printf("PDF pages: %d", len(pages))
+
+	chunks := g.makeChunksFromPages(pages, 6, 1) // 6 pages per chunk, 1 page overlap
+	log.Printf("Built %d chunk(s) (pages_per_chunk=6, overlap=1)", len(chunks))
+
+	// Prefilter chunks to only those likely containing sections
+	candidateChunks := g.filterCandidateChunks(chunks)
+	log.Printf("Candidate chunks to call model on (after prefilter): %d", len(candidateChunks))
+
+	chunkResults := [][]SectionAnalysis{}
+	processedCount := 0
+	consecutiveNoNew := 0
+	maxConsecutiveNoNew := 6
+
+	for i, chunk := range candidateChunks {
+		processedCount++
+		log.Printf("--- chunk %d/%d pages %s ---", processedCount, len(candidateChunks), chunk.PageRange)
+
+		chunkPrompt := fmt.Sprintf(CHUNK_PROMPT, chunk.Text)
+		chunkResp, err := g.flashModel.GenerateContent(ctx, genai.Text(chunkPrompt))
+
+		if err != nil {
+			log.Printf("Chunk %d failed: %v", processedCount, err)
+			consecutiveNoNew++
+		} else if len(chunkResp.Candidates) == 0 || len(chunkResp.Candidates[0].Content.Parts) == 0 {
+			log.Printf("Chunk %d returned empty response", processedCount)
+			consecutiveNoNew++
+		} else {
+			var chunkResult string
+			for _, part := range chunkResp.Candidates[0].Content.Parts {
+				if textPart, ok := part.(genai.Text); ok {
+					chunkResult += string(textPart)
+				}
+			}
+
+			log.Printf("RAW preview: %s", truncateStringForSections(strings.ReplaceAll(chunkResult, "\n", " "), 800))
+			chunkResult = cleanJSONResponse(chunkResult)
+
+			var chunkSections []SectionAnalysis
+			if json.Unmarshal([]byte(chunkResult), &chunkSections) == nil && len(chunkSections) > 0 {
+				chunkResults = append(chunkResults, chunkSections)
+				consecutiveNoNew = 0
+			} else {
+				consecutiveNoNew++
+			}
+		}
+
+		// Early stopping condition
+		if consecutiveNoNew >= maxConsecutiveNoNew {
+			log.Printf("Early stopping: %d consecutive chunks added no new info.", consecutiveNoNew)
+			break
+		}
+
+		// Throttle to avoid rate limiting
+		if i < len(candidateChunks)-1 {
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+
+	// Aggregate chunk results
 	if len(chunkResults) == 0 {
 		return &SectionwiseResult{
 			Mode:  "chunk_failed",
@@ -168,7 +222,7 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 	aggregated := g.aggregateChunksWithModel(ctx, chunkResults)
 	if aggregated != nil {
 		return &SectionwiseResult{
-			Mode:  "chunk_model_aggregate",
+			Mode:  "chunk_optimized",
 			Final: *aggregated,
 		}, nil
 	}
@@ -176,7 +230,7 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 	// Fallback to programmatic aggregation
 	final := g.programmaticAggregate(chunkResults)
 	return &SectionwiseResult{
-		Mode:  "chunk_programmatic_aggregate",
+		Mode:  "chunk_optimized",
 		Final: final,
 	}, nil
 }
@@ -301,4 +355,121 @@ func minInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+func truncateStringForSections(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
+// Section header keywords for filtering
+var sectionHeaderKeywords = []string{
+	`\\brfp\\b`, `\\bsection\\b`, `\\bscope\\b`, `\\bscope of work\\b`, `\\bproject overview\\b`,
+	`\\bmajor work\\b`, `\\btechnical standard\\b`, `\\bsection-wise\\b`, `\\beligibility\\b`,
+	`\\bsection wise\\b`, `\\brfp section\\b`,
+}
+
+func (g *GeminiService) extractTextByPage(documentText string) []string {
+	// Split document by page markers [PAGE:X]
+	pageRegex := regexp.MustCompile(`\\[PAGE:(\\d+)\\]`)
+	parts := pageRegex.Split(documentText, -1)
+	pages := make([]string, 0)
+
+	for i, part := range parts {
+		if i == 0 && !pageRegex.MatchString(documentText[:len(part)]) {
+			// First part before any page marker
+			continue
+		}
+		pages = append(pages, strings.TrimSpace(part))
+	}
+
+	// Fallback: if no page markers found, split by estimated page size
+	if len(pages) == 0 {
+		estimatedPageSize := 3000 // chars per page
+		for i := 0; i < len(documentText); i += estimatedPageSize {
+			end := i + estimatedPageSize
+			if end > len(documentText) {
+				end = len(documentText)
+			}
+			pages = append(pages, documentText[i:end])
+		}
+	}
+
+	return pages
+}
+
+func (g *GeminiService) makeChunksFromPages(pageTexts []string, pagesPerChunk, overlapPages int) []OptimizedChunk {
+	chunks := make([]OptimizedChunk, 0)
+	n := len(pageTexts)
+	if n == 0 {
+		return chunks
+	}
+
+	i := 0
+	for i < n {
+		start := i
+		end := minInt(n, i+pagesPerChunk)
+
+		// Build chunk text with page markers
+		var textParts []string
+		for idx := start; idx < end; idx++ {
+			textParts = append(textParts, fmt.Sprintf("[PAGE:%d]\\n%s", idx+1, pageTexts[idx]))
+		}
+		text := strings.Join(textParts, "\\n\\n")
+
+		chunks = append(chunks, OptimizedChunk{
+			StartPage: start + 1,
+			EndPage:   end,
+			Text:      text,
+			PageRange: fmt.Sprintf("%d-%d", start+1, end),
+		})
+
+		if end == n {
+			break
+		}
+		i = end - overlapPages
+	}
+
+	return chunks
+}
+
+func (g *GeminiService) filterCandidateChunks(chunks []OptimizedChunk) []OptimizedChunk {
+	candidates := make([]OptimizedChunk, 0)
+
+	for _, chunk := range chunks {
+		if g.chunkLikelyHasSectionHeader(chunk.Text) {
+			candidates = append(candidates, chunk)
+		}
+	}
+
+	// If no candidates found, use all chunks
+	if len(candidates) == 0 {
+		return chunks
+	}
+
+	return candidates
+}
+
+func (g *GeminiService) chunkLikelyHasSectionHeader(chunkText string) bool {
+	s := strings.ToLower(chunkText)
+
+	// Check for section header keywords
+	for _, pattern := range sectionHeaderKeywords {
+		if matched, _ := regexp.MatchString(pattern, s); matched {
+			return true
+		}
+	}
+
+	// Heuristic: detect all-caps headings
+	lines := strings.Split(chunkText, "\\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if len(line) >= 4 && len(line) <= 120 && line == strings.ToUpper(line) && len(strings.Fields(line)) < 12 {
+			return true
+		}
+	}
+
+	return false
 }
