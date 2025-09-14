@@ -61,6 +61,7 @@ func main() {
 	vectorStore := NewVectorStore()
 	pdfParser := NewPDFParser()
 	tenderIQHandler := NewTenderIQHandler(geminiService, vectorStore, pdfParser)
+	sowExtractor := NewSOWExtractor(geminiService, os.Getenv("GEMINI_API_KEY"))
 
 	// Routes
 	e.GET("/", func(c echo.Context) error {
@@ -75,6 +76,9 @@ func main() {
 	tenderIQGroup.POST("/upload", tenderIQHandler.UploadDocument)
 	tenderIQGroup.POST("/analyze", tenderIQHandler.AnalyzeDocument)
 	tenderIQGroup.POST("/sections", tenderIQHandler.AnalyzeSections)
+	tenderIQGroup.POST("/scope-of-work", func(c echo.Context) error {
+		return handleScopeOfWorkExtraction(c, sowExtractor, pdfParser)
+	})
 	tenderIQGroup.GET("/documents", tenderIQHandler.ListDocuments)
 	tenderIQGroup.GET("/documents/:id", tenderIQHandler.GetDocument)
 	tenderIQGroup.DELETE("/documents/:id", tenderIQHandler.DeleteDocument)

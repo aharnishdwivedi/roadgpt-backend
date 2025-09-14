@@ -121,3 +121,33 @@ func (p *PDFParser) ExtractMetadata(reader io.ReaderAt, size int64) (map[string]
 
 	return metadata, nil
 }
+
+// ExtractTextByPage extracts text from each page separately
+func (p *PDFParser) ExtractTextByPage(reader io.Reader) ([]string, error) {
+	// Read all data from reader
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read PDF data: %w", err)
+	}
+
+	// Open PDF document from memory
+	doc, err := fitz.NewFromMemory(data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open PDF document: %w", err)
+	}
+	defer doc.Close()
+
+	var pages []string
+	
+	// Extract text from each page
+	for pageNum := 0; pageNum < doc.NumPage(); pageNum++ {
+		text, err := doc.Text(pageNum)
+		if err != nil {
+			pages = append(pages, "") // Add empty page on error
+			continue
+		}
+		pages = append(pages, text)
+	}
+
+	return pages, nil
+}
