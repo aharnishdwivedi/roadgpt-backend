@@ -163,8 +163,8 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 	pages := g.extractTextByPage(documentText)
 	log.Printf("PDF pages: %d", len(pages))
 
-	chunks := g.makeChunksFromPages(pages, 4, 1) // 4 pages per chunk, 1 page overlap (smaller for faster processing)
-	log.Printf("Built %d chunk(s) (pages_per_chunk=4, overlap=1)", len(chunks))
+	chunks := g.makeChunksFromPages(pages, 3, 1) // 3 pages per chunk, 1 page overlap (optimized for speed)
+	log.Printf("Built %d chunk(s) (pages_per_chunk=3, overlap=1)", len(chunks))
 
 	// Prefilter chunks to only those likely containing sections
 	candidateChunks := g.filterCandidateChunks(chunks)
@@ -173,7 +173,7 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 	chunkResults := [][]SectionAnalysis{}
 	processedCount := 0
 	consecutiveNoNew := 0
-	maxConsecutiveNoNew := 6
+	maxConsecutiveNoNew := 4 // Reduced from 6 for faster early stopping
 	maxRetries := 1                          // Reduce retries for faster processing
 	processedChunks := make(map[string]bool) // Track processed chunks to avoid duplicates
 
@@ -203,8 +203,8 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 
 			chunkPrompt := fmt.Sprintf(CHUNK_PROMPT, chunk.Text)
 
-			// Create context with shorter timeout for faster failure detection
-			chunkCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+			// Create context with aggressive timeout for speed
+			chunkCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 			chunkResp, err := g.flashModel.GenerateContent(chunkCtx, genai.Text(chunkPrompt))
 			cancel()
 
@@ -260,9 +260,9 @@ func (g *GeminiService) ExtractSectionwiseAnalysis(documentText string) (*Sectio
 			break
 		}
 
-		// Minimal throttle for speed
+		// Ultra-minimal throttle for maximum speed
 		if i < len(candidateChunks)-1 {
-			time.Sleep(100 * time.Millisecond)
+			time.Sleep(50 * time.Millisecond)
 		}
 	}
 
